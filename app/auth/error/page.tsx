@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default async function Page({
+export default async function AuthErrorPage({
   searchParams,
 }: {
   searchParams: Promise<{ error: string }>;

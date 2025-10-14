@@ -47,16 +47,82 @@ export async function updateSession(request: NextRequest) {
   const { data } = await supabase.auth.getClaims();
   const user = data?.claims;
 
-  if (
-    request.nextUrl.pathname !== "/" &&
-    !user &&
-    !request.nextUrl.pathname.startsWith("/login") &&
-    !request.nextUrl.pathname.startsWith("/auth")
-  ) {
-    // no user, potentially respond by redirecting the user to the login page
+  const pathname = request.nextUrl.pathname;
+
+  // Allow public routes
+  const publicRoutes = [
+    '/',
+    '/auth/login',
+    '/auth/sign-up',
+    '/auth/sign-up-success',
+    '/auth/forgot-password',
+    '/auth/update-password',
+    '/auth/error',
+    '/auth/confirm'
+  ];
+
+  const isPublicRoute = publicRoutes.some(route => pathname.startsWith(route));
+
+  // Redirect unauthenticated users to login
+  if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
     return NextResponse.redirect(url);
+  }
+
+  // Role-based access control for authenticated users
+  if (user && !isPublicRoute) {
+    try {
+      // Get user role from database
+      const { data: userRole, error } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', user.sub)
+        .single();
+
+      if (error) {
+        console.error('Error fetching user role:', error);
+        // If we can't get the role, redirect to login
+        const url = request.nextUrl.clone();
+        url.pathname = "/auth/login";
+        return NextResponse.redirect(url);
+      }
+
+      const role = userRole?.role;
+
+      // Role-based route protection
+      if (pathname.startsWith('/dashboard/manager') && role !== 'manager') {
+        // Non-managers trying to access manager routes
+        const url = request.nextUrl.clone();
+        url.pathname = role === 'agent' ? '/dashboard/agent' : '/dashboard';
+        return NextResponse.redirect(url);
+      }
+
+      if (pathname.startsWith('/dashboard/agent') && role !== 'agent') {
+        // Non-agents trying to access agent routes
+        const url = request.nextUrl.clone();
+        url.pathname = role === 'manager' ? '/dashboard/manager' : '/dashboard';
+        return NextResponse.redirect(url);
+      }
+
+      // Redirect to appropriate dashboard based on role
+      if (pathname === '/dashboard' && role) {
+        const url = request.nextUrl.clone();
+        url.pathname = role === 'manager' ? '/dashboard/manager' : '/dashboard/agent';
+        return NextResponse.redirect(url);
+      }
+
+      // Redirect authenticated users away from auth pages
+      if (isPublicRoute && pathname.startsWith('/auth') && pathname !== '/auth/confirm') {
+        const url = request.nextUrl.clone();
+        url.pathname = role === 'manager' ? '/dashboard/manager' : '/dashboard/agent';
+        return NextResponse.redirect(url);
+      }
+
+    } catch (error) {
+      console.error('Middleware error:', error);
+      // On error, allow the request to continue but log the issue
+    }
   }
 
   // IMPORTANT: You *must* return the supabaseResponse object as it is.
