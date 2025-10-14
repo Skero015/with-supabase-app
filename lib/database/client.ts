@@ -4,30 +4,11 @@
  */
 
 import { createClient } from '@/lib/supabase/client'
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
-import type { Database, DatabaseError, DatabaseResponse } from './types'
+import type { DatabaseError, DatabaseResponse } from './types'
 
 // Browser client (for client-side operations)
 export function createBrowserClient() {
   return createClient()
-}
-
-// Server client (for server-side operations)
-export async function createServerDatabaseClient() {
-  const cookieStore = await cookies()
-  
-  return createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value
-        },
-      },
-    }
-  )
 }
 
 // Typed client for database operations
