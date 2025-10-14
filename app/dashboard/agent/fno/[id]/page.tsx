@@ -53,7 +53,9 @@ export default async function AgentFnoDetailsPage({ params }: AgentFnoDetailsPag
   console.info("[AgentFnoView] FNO fetch", { 
     fnoId: resolvedParams.id, 
     found: !!fnoData,
-    error: fnoError?.message 
+    error: fnoError?.message,
+    hasSteps: !!fnoData?.installation_steps,
+    stepsCount: fnoData?.installation_steps?.length || 0
   });
 
   if (fnoError || !fnoData) {

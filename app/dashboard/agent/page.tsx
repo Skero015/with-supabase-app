@@ -45,7 +45,10 @@ export default async function AgentDashboardPage() {
   
   console.info("[AgentDashboard] FNOs fetched", { 
     count: fnos?.length || 0, 
-    error: fnosError?.message 
+    error: fnosError?.message,
+    errorDetails: fnosError,
+    hasRole: !!roleData?.role,
+    userRole: roleData?.role
   });
 
   console.info("[AgentDashboard] Rendering component");
