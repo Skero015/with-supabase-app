@@ -2,7 +2,6 @@
 
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
-import { createUserRole } from "@/lib/database/user-roles";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,67 +26,190 @@ export function SignUpForm({
   const [repeatPassword, setRepeatPassword] = useState("");
   const [role, setRole] = useState<UserRole>("agent");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    email?: string;
+    password?: string;
+    repeatPassword?: string;
+  }>({});
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
+
+  // Password strength validation
+  const validatePassword = (pwd: string): { isValid: boolean; message?: string } => {
+    if (pwd.length < 8) {
+      return { isValid: false, message: "Password must be at least 8 characters" };
+    }
+    if (!/[A-Z]/.test(pwd)) {
+      return { isValid: false, message: "Password must contain at least one uppercase letter" };
+    }
+    if (!/[a-z]/.test(pwd)) {
+      return { isValid: false, message: "Password must contain at least one lowercase letter" };
+    }
+    if (!/[0-9]/.test(pwd)) {
+      return { isValid: false, message: "Password must contain at least one number" };
+    }
+    return { isValid: true };
+  };
+
+  // Real-time field validation
+  const handleEmailBlur = () => {
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setFieldErrors(prev => ({ ...prev, email: "Please enter a valid email address" }));
+    } else {
+      setFieldErrors(prev => ({ ...prev, email: undefined }));
+    }
+  };
+
+  const handlePasswordBlur = () => {
+    if (password) {
+      const validation = validatePassword(password);
+      if (!validation.isValid) {
+        setFieldErrors(prev => ({ ...prev, password: validation.message }));
+      } else {
+        setFieldErrors(prev => ({ ...prev, password: undefined }));
+      }
+    }
+  };
+
+  const handleRepeatPasswordBlur = () => {
+    if (repeatPassword && password !== repeatPassword) {
+      setFieldErrors(prev => ({ ...prev, repeatPassword: "Passwords do not match" }));
+    } else {
+      setFieldErrors(prev => ({ ...prev, repeatPassword: undefined }));
+    }
+  };
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     const supabase = createClient();
     setIsLoading(true);
     setError(null);
+    setFieldErrors({});
+
+    // Validate all fields before submission
+    const errors: typeof fieldErrors = {};
+    
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errors.email = "Please enter a valid email address";
+    }
+
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      errors.password = passwordValidation.message;
+    }
 
     if (password !== repeatPassword) {
-      setError("Passwords do not match");
+      errors.repeatPassword = "Passwords do not match";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
       setIsLoading(false);
       return;
     }
 
     try {
+      console.info("[SignUp] Starting signup", { email, role });
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/auth/login`,
+          emailRedirectTo: `${window.location.origin}/auth/confirm`,
+          data: {
+            role: role,
+          },
         },
       });
-      
+      console.info("[SignUp] signUp response", { data, error });
+
       if (error) {
-        // Handle specific auth errors
         if (error.message.includes("For security purposes")) {
           throw new Error("Please wait before trying again. Too many signup attempts.");
         }
         throw error;
       }
-      
-      // Create user role after successful signup
+
+      let destination: "agent" | "manager" = role;
+
       if (data.user) {
         try {
-          const roleResult = await createUserRole({
-            user_id: data.user.id,
-            role: role
-          });
-          
-          if (roleResult.error) {
-            // If RLS is blocking, provide helpful error message
-            if (roleResult.error.message.includes("row-level security policy")) {
-              throw new Error(
-                "Database security policies need to be configured. Please contact your administrator to set up RLS policies for user signup."
-              );
+          console.info("[SignUp] Created user", { userId: data.user.id });
+
+          const confirmSession = async () => {
+            const deadline = Date.now() + 10000;
+            let lastError: unknown = null;
+
+            while (Date.now() < deadline) {
+              const { data: current, error: currentError } = await supabase.auth.getSession();
+              if (current?.session?.user) {
+                return current.session.user;
+              }
+              lastError = currentError;
+              await new Promise((resolve) => setTimeout(resolve, 300));
             }
-            throw new Error(roleResult.error.message || "Failed to create user role");
+            return Promise.reject(lastError ?? new Error("Session not established within timeout"));
+          };
+
+          const attemptAutoLogin = async () => {
+            if (data.session?.user) return data.session.user;
+            const { data: signInData, error: signInError } =
+              await supabase.auth.signInWithPassword({ email, password });
+            console.info("[SignUp] Auto sign-in result", { signInData, signInError });
+            if (signInError || !signInData.session?.user) {
+              return null;
+            }
+            return signInData.session.user;
+          };
+
+          let sessionUser = await attemptAutoLogin();
+          if (!sessionUser) {
+            setError(
+              "Account created, but automatic login failed. Please sign in manually with your new credentials."
+            );
+            const message = encodeURIComponent(
+              "Account created. Please sign in with the credentials you just created."
+            );
+            router.push(`/auth/login?message=${message}`);
+            return;
+          }
+
+          sessionUser = await confirmSession();
+
+          // Create role via API route to use server-side client
+          try {
+            const roleResponse = await fetch('/api/user-roles', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                user_id: data.user.id,
+                role: role,
+              }),
+            });
+
+            const roleResult = await roleResponse.json();
+            console.info("[SignUp] Role assignment result", roleResult);
+
+            if (!roleResponse.ok || roleResult.error) {
+              console.error("[SignUp] Role creation failed", roleResult);
+              // Don't throw - allow user to proceed, they can be assigned role later
+              destination = "agent"; // Default to agent if role creation fails
+            }
+          } catch (roleError) {
+            console.error("[SignUp] Role creation request failed", roleError);
+            destination = "agent"; // Default to agent if role creation fails
           }
         } catch (roleError) {
-          // If role creation fails, we should still show success since auth user was created
           console.error("Role creation failed:", roleError);
           setError("Account created but role assignment failed. Please contact support.");
-          router.push("/auth/sign-up-success");
-          return;
+          destination = "agent";
         }
       }
-      
-      router.push("/auth/sign-up-success");
+
+      console.info("[SignUp] Redirecting to success", { destination });
+      router.push(`/auth/sign-up-success?role=${destination}`);
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
+      console.error("[SignUp] Error", error);
     } finally {
       setIsLoading(false);
     }
@@ -108,11 +230,20 @@ export function SignUpForm({
                 <Input
                   id="email"
                   type="email"
-                  placeholder="m@example.com"
+                  placeholder="your.email@gmail.com"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
+                  onBlur={handleEmailBlur}
+                  aria-invalid={!!fieldErrors.email}
+                  aria-describedby={fieldErrors.email ? "email-error" : undefined}
+                  className={fieldErrors.email ? "border-red-500" : ""}
                 />
+                {fieldErrors.email && (
+                  <p id="email-error" className="text-xs text-red-500" role="alert">
+                    {fieldErrors.email}
+                  </p>
+                )}
               </div>
               <div className="grid gap-2">
                 <div className="flex items-center">
@@ -124,7 +255,19 @@ export function SignUpForm({
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  onBlur={handlePasswordBlur}
+                  aria-invalid={!!fieldErrors.password}
+                  aria-describedby={fieldErrors.password ? "password-error password-requirements" : "password-requirements"}
+                  className={fieldErrors.password ? "border-red-500" : ""}
                 />
+                <p id="password-requirements" className="text-xs text-muted-foreground">
+                  Must be at least 8 characters with uppercase, lowercase, and number
+                </p>
+                {fieldErrors.password && (
+                  <p id="password-error" className="text-xs text-red-500" role="alert">
+                    {fieldErrors.password}
+                  </p>
+                )}
               </div>
               <div className="grid gap-2">
                 <div className="flex items-center">
@@ -136,7 +279,16 @@ export function SignUpForm({
                   required
                   value={repeatPassword}
                   onChange={(e) => setRepeatPassword(e.target.value)}
+                  onBlur={handleRepeatPasswordBlur}
+                  aria-invalid={!!fieldErrors.repeatPassword}
+                  aria-describedby={fieldErrors.repeatPassword ? "repeat-password-error" : undefined}
+                  className={fieldErrors.repeatPassword ? "border-red-500" : ""}
                 />
+                {fieldErrors.repeatPassword && (
+                  <p id="repeat-password-error" className="text-xs text-red-500" role="alert">
+                    {fieldErrors.repeatPassword}
+                  </p>
+                )}
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="role">Role</Label>
@@ -157,7 +309,11 @@ export function SignUpForm({
                   }
                 </p>
               </div>
-              {error && <p className="text-sm text-red-500">{error}</p>}
+              {error && (
+                <div className="p-3 rounded-md bg-red-50 border border-red-200" role="alert" aria-live="assertive">
+                  <p className="text-sm text-red-600">{error}</p>
+                </div>
+              )}
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Creating an account..." : "Sign up"}
               </Button>
