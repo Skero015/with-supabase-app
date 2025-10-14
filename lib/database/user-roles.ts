@@ -47,11 +47,23 @@ export async function createUserRole(
   }
   
   return executeQuery(async () => {
-    const { data, error } = await client
+    const { data, error, status } = await client
       .from('user_roles')
       .insert(userRole)
       .select()
-      .single()
+      .maybeSingle()
+
+    if (status === 409) {
+      // Row already exists — treat as success
+      return {
+        data: {
+          user_id: userRole.user_id,
+          role: userRole.role,
+          created_at: new Date().toISOString()
+        } as UserRoleRow,
+        error: null
+      }
+    }
     
     return { data, error }
   })

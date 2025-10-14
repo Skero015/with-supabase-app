@@ -1,7 +1,5 @@
 import { redirect, notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getUserRole } from "@/lib/database/user-roles";
-import { getFnoWithSteps } from "@/lib/database/fnos";
 import { FnoEditForm } from "@/components/dashboard/fno-edit-form";
 
 interface FnoEditPageProps {
@@ -14,25 +12,60 @@ export default async function ManagerFnoEditPage({ params }: FnoEditPageProps) {
   const resolvedParams = await params;
   const supabase = await createClient();
 
-  const { data, error } = await supabase.auth.getClaims();
-  if (error || !data?.claims) {
+  console.info("[ManagerFnoEdit] Starting page render", { fnoId: resolvedParams.id });
+
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  console.info("[ManagerFnoEdit] Auth check", { 
+    hasUser: !!userData?.user, 
+    userId: userData?.user?.id,
+    error: userError?.message 
+  });
+
+  if (userError || !userData?.user) {
+    console.info("[ManagerFnoEdit] No user found, redirecting to login");
     redirect("/auth/login");
   }
 
   // Verify user is a manager
-  const roleResult = await getUserRole(data.claims.sub);
-  if (roleResult.error || !roleResult.data || roleResult.data.role !== "manager") {
-    redirect("/dashboard");
+  const { data: roleData } = await supabase
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', userData.user.id)
+    .maybeSingle();
+
+  console.info("[ManagerFnoEdit] Role check", { userId: userData.user.id, role: roleData?.role });
+
+  if (roleData?.role !== "manager") {
+    console.warn("[ManagerFnoEdit] Non-manager attempted access, redirecting to agent dashboard");
+    redirect("/dashboard/agent");
   }
 
   // Get FNO with installation steps
-  const fnoResult = await getFnoWithSteps(resolvedParams.id);
-  if (fnoResult.error || !fnoResult.data) {
+  const { data: fnoData, error: fnoError } = await supabase
+    .from('fnos')
+    .select(`
+      *,
+      installation_steps (*)
+    `)
+    .eq('id', resolvedParams.id)
+    .maybeSingle();
+
+  console.info("[ManagerFnoEdit] FNO fetch", { 
+    fnoId: resolvedParams.id, 
+    found: !!fnoData,
+    error: fnoError?.message 
+  });
+
+  if (fnoError || !fnoData) {
     notFound();
   }
 
   // Verify the manager owns this FNO
-  if (fnoResult.data.created_by !== data.claims.sub) {
+  if (fnoData.created_by !== userData.user.id) {
+    console.warn("[ManagerFnoEdit] Manager attempted to edit FNO they don't own", {
+      userId: userData.user.id,
+      fnoCreatedBy: fnoData.created_by
+    });
     redirect("/dashboard/manager");
   }
 
@@ -41,11 +74,11 @@ export default async function ManagerFnoEditPage({ params }: FnoEditPageProps) {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Edit FNO</h1>
         <p className="text-muted-foreground">
-          Update {fnoResult.data.name} details and installation process
+          Update {fnoData.name} details and installation process
         </p>
       </div>
 
-      <FnoEditForm fno={fnoResult.data} />
+      <FnoEditForm fno={fnoData} />
     </div>
   );
 }

@@ -1,7 +1,5 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getUserRole } from "@/lib/database/user-roles";
-import { getFnosByCreator } from "@/lib/database/fnos";
 import { FnoList } from "@/components/dashboard/fno-list";
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
@@ -10,20 +8,36 @@ import Link from "next/link";
 export default async function ManagerDashboardPage() {
   const supabase = await createClient();
 
-  const { data, error } = await supabase.auth.getClaims();
-  if (error || !data?.claims) {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData?.user) {
     redirect("/auth/login");
   }
 
-  // Verify user is a manager
-  const roleResult = await getUserRole(data.claims.sub);
-  if (roleResult.error || !roleResult.data || roleResult.data.role !== "manager") {
-    redirect("/dashboard");
+  // Check user role - must be a manager to access this page
+  const { data: roleData } = await supabase
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', userData.user.id)
+    .maybeSingle();
+
+  console.info("[ManagerDashboard] Role check", { userId: userData.user.id, role: roleData?.role });
+
+  // If not a manager, redirect to agent dashboard (or main dashboard which will redirect to agent)
+  if (roleData?.role !== "manager") {
+    redirect("/dashboard/agent");
   }
 
   // Get FNOs created by this manager
-  const fnosResult = await getFnosByCreator(data.claims.sub);
-  const fnos = fnosResult.data || [];
+  console.info("[ManagerDashboard] Fetching FNOs");
+  const { data: fnos, error: fnosError } = await supabase
+    .from('fnos')
+    .select('*')
+    .eq('created_by', userData.user.id);
+  
+  console.info("[ManagerDashboard] FNOs fetched", { 
+    count: fnos?.length || 0, 
+    error: fnosError?.message 
+  });
 
   return (
     <div className="space-y-6">
@@ -81,7 +95,7 @@ export default async function ManagerDashboardPage() {
               </Button>
             </div>
           ) : (
-            <FnoList fnos={fnos} userRole="manager" />
+            <FnoList fnos={fnos || []} userRole="manager" />
           )}
         </div>
       </div>

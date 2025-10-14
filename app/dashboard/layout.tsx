@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getUserRole } from "@/lib/database/user-roles";
 import { AuthButton } from "@/components/auth-button";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import Link from "next/link";
@@ -12,18 +11,36 @@ export default async function DashboardLayout({
 }) {
   const supabase = await createClient();
 
-  const { data, error } = await supabase.auth.getClaims();
-  if (error || !data?.claims) {
+  console.info("[DashboardLayout] Starting layout render");
+
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  console.info("[DashboardLayout] Auth check", { 
+    hasUser: !!userData?.user, 
+    userId: userData?.user?.id,
+    error: userError?.message 
+  });
+
+  if (userError || !userData?.user) {
+    console.info("[DashboardLayout] No user, redirecting to login");
     redirect("/auth/login");
   }
 
-  // Get user role
-  const roleResult = await getUserRole(data.claims.sub);
-  if (roleResult.error || !roleResult.data) {
-    redirect("/auth/login");
-  }
+  // Query role directly with server client
+  const { data: roleData } = await supabase
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', userData.user.id)
+    .maybeSingle();
 
-  const userRole = roleResult.data.role;
+  console.info("[DashboardLayout] Role check", { 
+    userId: userData.user.id, 
+    role: roleData?.role 
+  });
+
+  // Default to agent if no role found (prevents redirect loops)
+  const userRole = roleData?.role || "agent";
+
+  console.info("[DashboardLayout] Layout render complete", { userRole });
 
   return (
     <main className="min-h-screen flex flex-col items-center">
