@@ -10,6 +10,7 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
     "setup-rls": "tsx scripts/setup-rls.ts",
+    "verify-rls": "tsx scripts/verify-rls-policies.ts",
     "test-rls": "tsx scripts/test-rls.ts",
     "verify-feature-4": "tsx scripts/verify-feature-4.ts"
   },

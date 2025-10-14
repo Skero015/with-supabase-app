@@ -47,19 +47,41 @@ export function SignUpForm({
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/protected`,
+          emailRedirectTo: `${window.location.origin}/auth/login`,
         },
       });
-      if (error) throw error;
+      
+      if (error) {
+        // Handle specific auth errors
+        if (error.message.includes("For security purposes")) {
+          throw new Error("Please wait before trying again. Too many signup attempts.");
+        }
+        throw error;
+      }
       
       // Create user role after successful signup
       if (data.user) {
-        const roleResult = await createUserRole({
-          user_id: data.user.id,
-          role: role
-        });
-        if (roleResult.error) {
-          throw new Error(roleResult.error.message || "Failed to create user role");
+        try {
+          const roleResult = await createUserRole({
+            user_id: data.user.id,
+            role: role
+          });
+          
+          if (roleResult.error) {
+            // If RLS is blocking, provide helpful error message
+            if (roleResult.error.message.includes("row-level security policy")) {
+              throw new Error(
+                "Database security policies need to be configured. Please contact your administrator to set up RLS policies for user signup."
+              );
+            }
+            throw new Error(roleResult.error.message || "Failed to create user role");
+          }
+        } catch (roleError) {
+          // If role creation fails, we should still show success since auth user was created
+          console.error("Role creation failed:", roleError);
+          setError("Account created but role assignment failed. Please contact support.");
+          router.push("/auth/sign-up-success");
+          return;
         }
       }
       
